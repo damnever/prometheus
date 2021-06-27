@@ -85,7 +85,7 @@ type Head struct {
 	series *stripeSeries
 
 	symMtx  sync.RWMutex
-	symbols map[string]struct{}
+	symbols map[string]string // Symbols also act as a string pool.
 
 	deletedMtx sync.Mutex
 	deleted    map[uint64]int // Deleted series, and what WAL segment they must be kept until.
@@ -388,7 +388,7 @@ func NewHead(r prometheus.Registerer, l log.Logger, wal *wal.WAL, opts *HeadOpti
 		opts:       opts,
 		exemplars:  es,
 		series:     newStripeSeries(opts.StripeSize, opts.SeriesCallback),
-		symbols:    map[string]struct{}{},
+		symbols:    map[string]string{},
 		postings:   index.NewUnorderedMemPostings(),
 		tombstones: tombstones.NewMemTombstones(),
 		iso:        newIsolation(),
@@ -580,7 +580,8 @@ func (h *Head) loadWAL(r *wal.Reader, multiRef map[uint64]uint64, mmappedChunks 
 			}
 			// At the moment the only possible error here is out of order exemplars, which we shouldn't see when
 			// replaying the WAL, so lets just log the error if it's not that type.
-			err = h.exemplars.AddExemplar(ms.lset, exemplar.Exemplar{Ts: e.T, Value: e.V, Labels: e.Labels})
+			lset := ms.lset.Load().(labels.Labels)
+			err = h.exemplars.AddExemplar(lset, exemplar.Exemplar{Ts: e.T, Value: e.V, Labels: e.Labels})
 			if err != nil && err == storage.ErrOutOfOrderExemplar {
 				level.Warn(h.logger).Log("msg", "Unexpected error when replaying WAL on exemplar record", "err", err)
 			}
@@ -1432,7 +1433,7 @@ func (a *headAppender) AppendExemplar(ref uint64, _ labels.Labels, e exemplar.Ex
 	// Ensure no empty labels have gotten through.
 	e.Labels = e.Labels.WithoutEmpty()
 
-	err := a.exemplarAppender.ValidateExemplar(s.lset, e)
+	err := a.exemplarAppender.ValidateExemplar(s.lset.Load().(labels.Labels), e)
 	if err != nil {
 		if err == storage.ErrDuplicateExemplar {
 			// Duplicate, don't return an error but don't accept the exemplar.
@@ -1454,7 +1455,7 @@ func (a *headAppender) GetRef(lset labels.Labels) (uint64, labels.Labels) {
 		return 0, nil
 	}
 	// returned labels must be suitable to pass to Append()
-	return s.ref, s.lset
+	return s.ref, s.lset.Load().(labels.Labels)
 }
 
 func (a *headAppender) log() error {
@@ -1523,7 +1524,8 @@ func (a *headAppender) Commit() (err error) {
 	for _, e := range a.exemplars {
 		s := a.head.series.getByID(e.ref)
 		// We don't instrument exemplar appends here, all is instrumented by storage.
-		if err := a.exemplarAppender.AddExemplar(s.lset, e.exemplar); err != nil {
+		lset := s.lset.Load().(labels.Labels)
+		if err := a.exemplarAppender.AddExemplar(lset, e.exemplar); err != nil {
 			if err == storage.ErrOutOfOrderExemplar {
 				continue
 			}
@@ -1672,10 +1674,11 @@ func (h *Head) gc() int64 {
 	h.symMtx.Lock()
 	defer h.symMtx.Unlock()
 
-	symbols := make(map[string]struct{}, len(h.symbols))
+	symbols := make(map[string]string, len(h.symbols))
 	if err := h.postings.Iter(func(l labels.Label, _ index.Postings) error {
-		symbols[l.Name] = struct{}{}
-		symbols[l.Value] = struct{}{}
+		// No need to check the uniqueness of those symbols since there is no new symbols.
+		symbols[l.Name] = l.Name
+		symbols[l.Value] = l.Value
 		return nil
 	}); err != nil {
 		// This should never happen, as the iteration function only returns nil.
@@ -1957,7 +1960,7 @@ func (h *headIndexReader) SortedPostings(p index.Postings) index.Postings {
 	}
 
 	sort.Slice(series, func(i, j int) bool {
-		return labels.Compare(series[i].lset, series[j].lset) < 0
+		return labels.Compare(series[i].lset.Load().(labels.Labels), series[j].lset.Load().(labels.Labels)) < 0
 	})
 
 	// Convert back to list.
@@ -1976,7 +1979,8 @@ func (h *headIndexReader) Series(ref uint64, lbls *labels.Labels, chks *[]chunks
 		h.head.metrics.seriesNotFound.Inc()
 		return storage.ErrNotFound
 	}
-	*lbls = append((*lbls)[:0], s.lset...)
+	lset := s.lset.Load().(labels.Labels)
+	*lbls = append((*lbls)[:0], lset...)
 
 	s.Lock()
 	defer s.Unlock()
@@ -2012,7 +2016,8 @@ func (h *headIndexReader) LabelValueFor(id uint64, label string) (string, error)
 		return "", storage.ErrNotFound
 	}
 
-	value := memSeries.lset.Get(label)
+	lset := memSeries.lset.Load().(labels.Labels)
+	value := lset.Get(label)
 	if value == "" {
 		return "", storage.ErrNotFound
 	}
@@ -2052,12 +2057,26 @@ func (h *Head) getOrCreateWithID(id, hash uint64, lset labels.Labels) (*memSerie
 	h.symMtx.Lock()
 	defer h.symMtx.Unlock()
 
-	for _, l := range lset {
-		h.symbols[l.Name] = struct{}{}
-		h.symbols[l.Value] = struct{}{}
+	newlset := make(labels.Labels, len(lset))
+	// Remove duplicate symbols to reduce memory usage.
+	for i, l := range lset {
+		name := l.Name
+		if s, ok := h.symbols[name]; ok {
+			name = s
+		} else {
+			h.symbols[name] = name
+		}
+		value := l.Value
+		if s, ok := h.symbols[value]; ok {
+			value = s
+		} else {
+			h.symbols[value] = value
+		}
+		newlset[i] = labels.Label{Name: name, Value: value}
 	}
+	s.lset.Store(newlset)
 
-	h.postings.Add(id, lset)
+	h.postings.Add(id, newlset)
 	return s, true, nil
 }
 
@@ -2069,7 +2088,7 @@ type seriesHashmap map[uint64][]*memSeries
 
 func (m seriesHashmap) get(hash uint64, lset labels.Labels) *memSeries {
 	for _, s := range m[hash] {
-		if labels.Equal(s.lset, lset) {
+		if labels.Equal(s.lset.Load().(labels.Labels), lset) {
 			return s
 		}
 	}
@@ -2079,7 +2098,7 @@ func (m seriesHashmap) get(hash uint64, lset labels.Labels) *memSeries {
 func (m seriesHashmap) set(hash uint64, s *memSeries) {
 	l := m[hash]
 	for i, prev := range l {
-		if labels.Equal(prev.lset, s.lset) {
+		if labels.Equal(prev.lset.Load().(labels.Labels), s.lset.Load().(labels.Labels)) {
 			l[i] = s
 			return
 		}
@@ -2090,7 +2109,7 @@ func (m seriesHashmap) set(hash uint64, s *memSeries) {
 func (m seriesHashmap) del(hash uint64, lset labels.Labels) {
 	var rem []*memSeries
 	for _, s := range m[hash] {
-		if !labels.Equal(s.lset, lset) {
+		if !labels.Equal(s.lset.Load().(labels.Labels), lset) {
 			rem = append(rem, s)
 		}
 	}
@@ -2182,9 +2201,10 @@ func (s *stripeSeries) gc(mint int64) (map[uint64]struct{}, int, int64) {
 				}
 
 				deleted[series.ref] = struct{}{}
-				s.hashes[i].del(hash, series.lset)
+				lset := series.lset.Load().(labels.Labels)
+				s.hashes[i].del(hash, lset)
 				delete(s.series[j], series.ref)
-				deletedForCallback = append(deletedForCallback, series.lset)
+				deletedForCallback = append(deletedForCallback, lset)
 
 				if i != j {
 					s.locks[j].Unlock()
@@ -2258,7 +2278,7 @@ func (s *stripeSeries) getOrSet(hash uint64, lset labels.Labels, createSeries fu
 	}
 	// Setting the series in the s.hashes marks the creation of series
 	// as any further calls to this methods would return that series.
-	s.seriesLifecycleCallback.PostCreation(series.lset)
+	s.seriesLifecycleCallback.PostCreation(series.lset.Load().(labels.Labels))
 
 	i = series.ref & uint64(s.size-1)
 
@@ -2284,7 +2304,7 @@ type memSeries struct {
 	sync.RWMutex
 
 	ref           uint64
-	lset          labels.Labels
+	lset          atomic.Value
 	mmappedChunks []*mmappedChunk
 	headChunk     *memChunk
 	chunkRange    int64
@@ -2303,13 +2323,13 @@ type memSeries struct {
 
 func newMemSeries(lset labels.Labels, id uint64, chunkRange int64, memChunkPool *sync.Pool) *memSeries {
 	s := &memSeries{
-		lset:         lset,
 		ref:          id,
 		chunkRange:   chunkRange,
 		nextAt:       math.MinInt64,
 		txs:          newTxRing(4),
 		memChunkPool: memChunkPool,
 	}
+	s.lset.Store(lset)
 	return s
 }
 

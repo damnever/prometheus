@@ -286,10 +286,10 @@ func TestHead_ReadWAL(t *testing.T) {
 			s50 := head.series.getByID(50)
 			s100 := head.series.getByID(100)
 
-			require.Equal(t, labels.FromStrings("a", "1"), s10.lset)
+			require.Equal(t, labels.FromStrings("a", "1"), s10.lset.Load().(labels.Labels))
 			require.Equal(t, (*memSeries)(nil), s11) // Series without samples should be garbage collected at head.Init().
-			require.Equal(t, labels.FromStrings("a", "4"), s50.lset)
-			require.Equal(t, labels.FromStrings("a", "3"), s100.lset)
+			require.Equal(t, labels.FromStrings("a", "4"), s50.lset.Load().(labels.Labels))
+			require.Equal(t, labels.FromStrings("a", "3"), s100.lset.Load().(labels.Labels))
 
 			expandChunk := func(c chunkenc.Iterator) (x []sample) {
 				for c.Next() {
@@ -776,7 +776,6 @@ func TestDeletedSamplesAndSeriesStillInWALAfterCheckpoint(t *testing.T) {
 	require.Equal(t, 1, series)
 	require.Equal(t, 9999, samples)
 	require.Equal(t, 1, stones)
-
 }
 
 func TestDelete_e2e(t *testing.T) {
@@ -1880,7 +1879,8 @@ func TestHeadLabelNamesValuesWithMinMaxRange(t *testing.T) {
 		lastSeriesTimestamp   int64 = 300
 	)
 	var (
-		seriesTimestamps = []int64{firstSeriesTimestamp,
+		seriesTimestamps = []int64{
+			firstSeriesTimestamp,
 			secondSeriesTimestamp,
 			lastSeriesTimestamp,
 		}
@@ -1897,7 +1897,7 @@ func TestHeadLabelNamesValuesWithMinMaxRange(t *testing.T) {
 	require.Equal(t, head.MinTime(), firstSeriesTimestamp)
 	require.Equal(t, head.MaxTime(), lastSeriesTimestamp)
 
-	var testCases = []struct {
+	testCases := []struct {
 		name           string
 		mint           int64
 		maxt           int64
@@ -1943,7 +1943,7 @@ func TestHeadLabelValuesWithMatchers(t *testing.T) {
 	}
 	require.NoError(t, app.Commit())
 
-	var testCases = []struct {
+	testCases := []struct {
 		name           string
 		labelName      string
 		matchers       []*labels.Matcher
