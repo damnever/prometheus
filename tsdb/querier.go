@@ -130,13 +130,9 @@ func (q *blockQuerier) Select(sortSeries bool, hints *storage.SelectHints, ms ..
 	maxt := q.maxt
 	disableTrimming := false
 
-	p, err := maybeCachedPostingsForMatchers(q.index, ms)
-	// p, err := PostingsForMatchers(q.index, ms...)
+	p, err := maybeCachedPostingsForMatchers(q.index, ms, sortSeries)
 	if err != nil {
 		return storage.ErrSeriesSet(err)
-	}
-	if sortSeries {
-		p = q.index.SortedPostings(p)
 	}
 
 	if hints != nil {
@@ -175,14 +171,11 @@ func (q *blockChunkQuerier) Select(sortSeries bool, hints *storage.SelectHints, 
 		maxt = hints.End
 		disableTrimming = hints.DisableTrimming
 	}
-	p, err := maybeCachedPostingsForMatchers(q.index, ms)
-	// p, err := PostingsForMatchers(q.index, ms...)
+	p, err := maybeCachedPostingsForMatchers(q.index, ms, sortSeries)
 	if err != nil {
 		return storage.ErrChunkSeriesSet(err)
 	}
-	if sortSeries {
-		p = q.index.SortedPostings(p)
-	}
+
 	return newBlockChunkSeriesSet(q.blockID, q.index, q.chunks, q.tombstones, p, mint, maxt, disableTrimming)
 }
 

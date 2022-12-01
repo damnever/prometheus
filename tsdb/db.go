@@ -1830,12 +1830,12 @@ func (db *DB) Querier(_ context.Context, mint, maxt int64) (storage.Querier, err
 	if outOfOrderHeadQuerier != nil {
 		blockQueriers = append(blockQueriers, outOfOrderHeadQuerier)
 	}
-	return querierWithContext{storage.NewMergeQuerier(blockQueriers, nil, storage.ChainedSeriesMerge), headQueryCtx}, nil
+	return storage.NewMergeQuerier(blockQueriers, nil, storage.ChainedSeriesMerge), nil
 }
 
 // blockQueriersForRange returns individual block chunk queriers from the persistent blocks, in-order head block, and the
 // out-of-order head block, overlapping with the given time range.
-func (db *DB) blockChunkQuerierForRange(mint, maxt int64) ([]storage.ChunkQuerier, *headQueryContext, error) {
+func (db *DB) blockChunkQuerierForRange(mint, maxt int64) ([]storage.ChunkQuerier, error) {
 	var blocks []BlockReader
 
 	db.mtx.RLock()
@@ -1854,7 +1854,7 @@ func (db *DB) blockChunkQuerierForRange(mint, maxt int64) ([]storage.ChunkQuerie
 		var err error
 		inOrderHeadQuerier, err = NewBlockChunkQuerier(blockReaderWithContext{rh, headQueryCtx}, mint, maxt)
 		if err != nil {
-			return nil, nil, errors.Wrapf(err, "open querier for head %s", rh)
+			return nil, errors.Wrapf(err, "open querier for head %s", rh)
 		}
 
 		// Getting the querier above registers itself in the queue that the truncation waits on.
@@ -1863,7 +1863,7 @@ func (db *DB) blockChunkQuerierForRange(mint, maxt int64) ([]storage.ChunkQuerie
 		shouldClose, getNew, newMint := db.head.IsQuerierCollidingWithTruncation(mint, maxt)
 		if shouldClose {
 			if err := inOrderHeadQuerier.Close(); err != nil {
-				return nil, nil, errors.Wrapf(err, "closing head querier %s", rh)
+				return nil, errors.Wrapf(err, "closing head querier %s", rh)
 			}
 			inOrderHeadQuerier = nil
 		}
@@ -1871,7 +1871,7 @@ func (db *DB) blockChunkQuerierForRange(mint, maxt int64) ([]storage.ChunkQuerie
 			rh := NewRangeHead(db.head, newMint, maxt)
 			inOrderHeadQuerier, err = NewBlockChunkQuerier(blockReaderWithContext{rh, headQueryCtx}, newMint, maxt)
 			if err != nil {
-				return nil, nil, errors.Wrapf(err, "open querier for head while getting new querier %s", rh)
+				return nil, errors.Wrapf(err, "open querier for head while getting new querier %s", rh)
 			}
 		}
 	}
@@ -1883,7 +1883,7 @@ func (db *DB) blockChunkQuerierForRange(mint, maxt int64) ([]storage.ChunkQuerie
 		var err error
 		outOfOrderHeadQuerier, err = NewBlockChunkQuerier(blockReaderWithContext{rh, headQueryCtx}, mint, maxt)
 		if err != nil {
-			return nil, nil, errors.Wrapf(err, "open block chunk querier for ooo head %s", rh)
+			return nil, errors.Wrapf(err, "open block chunk querier for ooo head %s", rh)
 		}
 	}
 
@@ -1899,7 +1899,7 @@ func (db *DB) blockChunkQuerierForRange(mint, maxt int64) ([]storage.ChunkQuerie
 			// TODO(bwplotka): Handle error.
 			_ = q.Close()
 		}
-		return nil, nil, errors.Wrapf(err, "open querier for block %s", b)
+		return nil, errors.Wrapf(err, "open querier for block %s", b)
 	}
 	if inOrderHeadQuerier != nil {
 		blockQueriers = append(blockQueriers, inOrderHeadQuerier)
@@ -1908,16 +1908,16 @@ func (db *DB) blockChunkQuerierForRange(mint, maxt int64) ([]storage.ChunkQuerie
 		blockQueriers = append(blockQueriers, outOfOrderHeadQuerier)
 	}
 
-	return blockQueriers, headQueryCtx, nil
+	return blockQueriers, nil
 }
 
 // ChunkQuerier returns a new chunk querier over the data partition for the given time range.
 func (db *DB) ChunkQuerier(_ context.Context, mint, maxt int64) (storage.ChunkQuerier, error) {
-	blockQueriers, headQueryCtx, err := db.blockChunkQuerierForRange(mint, maxt)
+	blockQueriers, err := db.blockChunkQuerierForRange(mint, maxt)
 	if err != nil {
 		return nil, err
 	}
-	return chunkQuerierWithContext{storage.NewMergeChunkQuerier(blockQueriers, nil, storage.NewCompactingChunkSeriesMerger(storage.ChainedSeriesMerge)), headQueryCtx}, nil
+	return storage.NewMergeChunkQuerier(blockQueriers, nil, storage.NewCompactingChunkSeriesMerger(storage.ChainedSeriesMerge)), nil
 }
 
 func (db *DB) ExemplarQuerier(ctx context.Context) (storage.ExemplarQuerier, error) {
