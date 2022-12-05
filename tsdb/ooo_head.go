@@ -14,6 +14,7 @@
 package tsdb
 
 import (
+	"context"
 	"fmt"
 	"sort"
 
@@ -101,6 +102,8 @@ type OOORangeHead struct {
 	// the timerange of the query and having preexisting pointers to the first
 	// and last timestamp help with that.
 	mint, maxt int64
+
+	ctx context.Context
 }
 
 func NewOOORangeHead(head *Head, mint, maxt int64) *OOORangeHead {
@@ -111,8 +114,17 @@ func NewOOORangeHead(head *Head, mint, maxt int64) *OOORangeHead {
 	}
 }
 
+func NewOOORangeHeadWithContext(ctx context.Context, head *Head, mint, maxt int64) *OOORangeHead {
+	return &OOORangeHead{
+		head: head,
+		mint: mint,
+		maxt: maxt,
+		ctx:  ctx,
+	}
+}
+
 func (oh *OOORangeHead) Index() (IndexReader, error) {
-	return NewOOOHeadIndexReader(oh.head, oh.mint, oh.maxt), nil
+	return NewOOOHeadIndexReaderWithContext(oh.ctx, oh.head, oh.mint, oh.maxt), nil
 }
 
 func (oh *OOORangeHead) Chunks() (ChunkReader, error) {

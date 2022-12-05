@@ -14,6 +14,7 @@
 package tsdb
 
 import (
+	"context"
 	"errors"
 	"math"
 	"sort"
@@ -43,6 +44,16 @@ func NewOOOHeadIndexReader(head *Head, mint, maxt int64) *OOOHeadIndexReader {
 		head: head,
 		mint: mint,
 		maxt: maxt,
+	}
+	return &OOOHeadIndexReader{hr}
+}
+
+func NewOOOHeadIndexReaderWithContext(ctx context.Context, head *Head, mint, maxt int64) *OOOHeadIndexReader {
+	hr := &headIndexReader{
+		head: head,
+		mint: mint,
+		maxt: maxt,
+		ctx:  ctx,
 	}
 	return &OOOHeadIndexReader{hr}
 }

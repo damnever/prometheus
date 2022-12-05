@@ -14,6 +14,7 @@
 package tsdb
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"math"
@@ -1264,6 +1265,7 @@ type RangeHead struct {
 	head       *Head
 	mint, maxt int64
 
+	ctx          context.Context
 	isolationOff bool
 }
 
@@ -1284,8 +1286,18 @@ func NewRangeHeadWithIsolationDisabled(head *Head, mint, maxt int64) *RangeHead 
 	return rh
 }
 
+// NewRangeHeadWithContext returns a *RangeHead with context.Context.
+func NewRangeHeadWithContext(ctx context.Context, head *Head, mint, maxt int64) *RangeHead {
+	return &RangeHead{
+		head: head,
+		mint: mint,
+		maxt: maxt,
+		ctx:  ctx,
+	}
+}
+
 func (h *RangeHead) Index() (IndexReader, error) {
-	return h.head.indexRange(h.mint, h.maxt), nil
+	return h.head.indexRangeWithContext(h.ctx, h.mint, h.maxt), nil
 }
 
 func (h *RangeHead) Chunks() (ChunkReader, error) {
