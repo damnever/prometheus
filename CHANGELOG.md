@@ -1,5 +1,7 @@
 # Changelog
 
+* [BUGFIX] Scrape: Report error if the series contains invalid metric names or labels. #11074
+
 ## 2.40.5 / 2022-12-01
 
 * [BUGFIX] TSDB: Fix queries involving native histograms due to improper reset of iterators. #11643
