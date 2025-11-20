@@ -2099,7 +2099,6 @@ func (db *DB) Querier(mint, maxt int64) (_ storage.Querier, err error) {
 	inoMint := max(db.head.MinTime(), mint)
 	if maxt >= db.head.MinTime() || overlapsOOO {
 		rh := NewRangeHead(db.head, mint, maxt)
-		var err error
 		headQuerier, err = db.blockQuerierFunc(rh, mint, maxt)
 		if err != nil {
 			return nil, fmt.Errorf("open block querier for head %s: %w", rh, err)
@@ -2109,31 +2108,40 @@ func (db *DB) Querier(mint, maxt int64) (_ storage.Querier, err error) {
 		// So if the querier is currently not colliding with any truncation, we can continue to use it and still
 		// won't run into a race later since any truncation that comes after will wait on this querier if it overlaps.
 		shouldClose, getNew, newMint := db.head.IsQuerierCollidingWithTruncation(mint, maxt)
-		if shouldClose {
-			if err := headQuerier.Close(); err != nil {
-				return nil, fmt.Errorf("closing head block querier %s: %w", rh, err)
-			}
-			headQuerier = nil
-		}
+		oldHeadQuerier := headQuerier
+
 		if getNew {
 			rh := NewRangeHead(db.head, newMint, maxt)
 			headQuerier, err = db.blockQuerierFunc(rh, newMint, maxt)
 			if err != nil {
+				_ = oldHeadQuerier.Close()
 				return nil, fmt.Errorf("open block querier for head while getting new querier %s: %w", rh, err)
 			}
 			inoMint = newMint
 		}
+
+		// Close the old querier only after the new one has been created, ensuring that truncation
+		// does not run another round and introduce another race.
+		if shouldClose {
+			if err := oldHeadQuerier.Close(); err != nil {
+				_ = headQuerier.Close()
+				return nil, fmt.Errorf("closing head block querier %s: %w", rh, err)
+			}
+		}
 	}
 
 	if overlapsOOO {
-		// We need to fetch from in-order and out-of-order chunks: wrap the headQuerier.
+		// We need to fetch from in-order and out-of-order chunks.
 		isoState := db.head.oooIso.TrackReadAfter(db.lastGarbageCollectedMmapRef)
-		orh := newOOORangeHead(inoMint, mint, maxt, db.head, isoState)
-		oooHeadQuerier, err := db.blockQuerierFunc(orh, mint, maxt)
-		if err != nil {
-			return nil, fmt.Errorf("open querier for ooohead %s: %w", orh, err)
+		rh := newHeadAndOOORangeHead(inoMint, mint, maxt, db.head, isoState)
+		headAndOOOQuerier, err := db.blockQuerierFunc(rh, mint, maxt)
+		if headQuerier != nil {
+			_ = headQuerier.Close() // Close it after the in-order and out-of-order querier is created to avoid race.
 		}
-		headQuerier = NewHeadAndOOOQuerier(oooHeadQuerier, headQuerier)
+		if err != nil {
+			return nil, fmt.Errorf("open block querier for in-order and out-of-order head %s: %w", rh, err)
+		}
+		headQuerier = headAndOOOQuerier
 	}
 
 	if headQuerier != nil {
@@ -2191,31 +2199,40 @@ func (db *DB) blockChunkQuerierForRange(mint, maxt int64) (_ []storage.ChunkQuer
 		// So if the querier is currently not colliding with any truncation, we can continue to use it and still
 		// won't run into a race later since any truncation that comes after will wait on this querier if it overlaps.
 		shouldClose, getNew, newMint := db.head.IsQuerierCollidingWithTruncation(mint, maxt)
-		if shouldClose {
-			if err := headQuerier.Close(); err != nil {
-				return nil, fmt.Errorf("closing head querier %s: %w", rh, err)
-			}
-			headQuerier = nil
-		}
+		oldHeadQuerier := headQuerier
+
 		if getNew {
 			rh := NewRangeHead(db.head, newMint, maxt)
 			headQuerier, err = db.blockChunkQuerierFunc(rh, newMint, maxt)
 			if err != nil {
+				_ = oldHeadQuerier.Close()
 				return nil, fmt.Errorf("open querier for head while getting new querier %s: %w", rh, err)
 			}
 			inoMint = newMint
 		}
+
+		// Close the old querier only after the new one has been created, ensuring that truncation
+		// does not run another round and introduce another race.
+		if shouldClose {
+			if err := oldHeadQuerier.Close(); err != nil {
+				_ = headQuerier.Close()
+				return nil, fmt.Errorf("closing head querier %s: %w", rh, err)
+			}
+		}
 	}
 
 	if overlapsOOO {
-		// We need to fetch from in-order and out-of-order chunks: wrap the headQuerier.
+		// We need to fetch from in-order and out-of-order chunks.
 		isoState := db.head.oooIso.TrackReadAfter(db.lastGarbageCollectedMmapRef)
-		orh := newOOORangeHead(inoMint, mint, maxt, db.head, isoState)
-		oooHeadQuerier, err := db.blockChunkQuerierFunc(orh, mint, maxt)
-		if err != nil {
-			return nil, fmt.Errorf("open querier for ooohead %s: %w", orh, err)
+		rh := newHeadAndOOORangeHead(inoMint, mint, maxt, db.head, isoState)
+		headAndOOOQuerier, err := db.blockChunkQuerierFunc(rh, mint, maxt)
+		if headQuerier != nil {
+			_ = headQuerier.Close() // Close it after the in-order and out-of-order querier is created to avoid race.
 		}
-		headQuerier = NewHeadAndOOOChunkQuerier(oooHeadQuerier, headQuerier)
+		if err != nil {
+			return nil, fmt.Errorf("open block chunk querier for in-order and out-of-order head %s: %w", rh, err)
+		}
+		headQuerier = headAndOOOQuerier
 	}
 
 	if headQuerier != nil {
